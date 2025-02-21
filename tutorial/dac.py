@@ -1,0 +1,100 @@
+from amaranth             import *
+from amaranth.lib         import wiring
+from amaranth.lib.wiring  import In, Out
+
+from .                    import clockgen
+
+class Channel(wiring.Component):
+    def __init__(self, bits=16, signed=False):
+        super().__init__({
+            "input":  In(bits),
+            "output": Out(1),
+        })
+
+        self.bits   = bits
+        self.signed = signed
+
+        self.stb    = Signal()
+        self.update = Signal()
+
+    def elaborate(self, platform):
+        m = Module()
+
+        input_u = Signal(self.bits)
+        if self.signed:
+            m.d.comb += input_u.eq(self.input - (1 << (self.bits - 1)))
+        else:
+            m.d.comb += input_u.eq(self.input)
+
+        accum   = Signal(self.bits)
+        input_r = Signal(self.bits)
+
+        with m.If(self.stb):
+            m.d.sync += Cat(accum, self.output).eq(accum + input_r)
+        with m.If(self.update):
+            m.d.sync += input_r.eq(input_u)
+
+        return m
+
+
+class DAC(wiring.Component):
+    def __init__(self, pulse_cycles, sample_cycles, width, signed=False):
+        assert width in (1, 2, 3, 4)
+
+        super().__init__({
+            "input": In(width * 8),
+            "output": Out(1),
+            "latch": Out(1),
+        })
+
+        self.pulse_cycles  = pulse_cycles
+        self.sample_cycles = sample_cycles
+        self.width         = width
+        self.signed        = signed
+
+        self.sync          = Signal()
+
+
+    def elaborate(self, platform):
+        m = Module()
+
+        print(f"pulse_cycles:  {self.pulse_cycles}")
+        print(f"sample_cycles: {self.sample_cycles}")
+
+        m.submodules.clock = clock = clockgen.ClockGen(self.pulse_cycles)
+
+        m.submodules.channel_0 = channel_0 = Channel(bits=self.width * 8, signed=self.signed)
+        #m.d.comb += channel_0.input.eq(self.input)
+        m.d.comb += self.output.eq(channel_0.output)
+        m.d.comb += channel_0.stb.eq(clock.stb_r)
+
+        m.d.comb += self.sync.eq(ClockSignal("sync"))
+
+        timer = Signal(range(self.sample_cycles))
+
+        len_channels = 1
+
+        with m.FSM():
+            with m.State("STANDBY"):
+                m.next = "WAIT"
+
+            with m.State("WAIT"):
+                with m.If(timer == 0):
+                    m.d.sync += timer.eq(self.sample_cycles - len_channels * self.width - 1)
+                    m.next = "CHANNEL-0-READ-1"
+                with m.Else():
+                    m.d.sync += timer.eq(timer - 1)
+
+            with m.State("CHANNEL-0-READ-1"):
+                m.d.sync += channel_0.input.eq(self.input)
+                m.next = "LATCH"
+
+            with m.State("LATCH"):
+                m.d.comb += self.latch.eq(1)
+                m.d.comb += channel_0.update.eq(1)
+                m.next = "WAIT"
+
+
+
+
+        return m
