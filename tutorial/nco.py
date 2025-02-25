@@ -18,7 +18,7 @@ def fsin(x, fs, phi=0):
     w = TAU
     return math.cos(w * x * T + phi)
 
-def sinusoid_lut(bit_depth, length, gain=1, signed=False, twos_complement=False):
+def sinusoid_lut(bit_depth, length, gain=1.0, signed=False):
     fs = length
     scale = math.pow(2, bit_depth) - 1
 
@@ -32,26 +32,12 @@ def sinusoid_lut(bit_depth, length, gain=1, signed=False, twos_complement=False)
         ys = [y + (scale/2) for y in ys]
 
     # signal gain
-    #gain = 0.872
-    #gain = 0.794328 # -2dB
-    #gain = 0.794328 # -2dB
-    #gain = 0.501187 # -6dB
     ys = [y * gain for y in ys]
 
     # convert to integer
     ys = [int(y) for y in ys]
 
-    # 2s complement - I think amaranth is natively 2's complement so this may not be needed
-    if twos_complement:
-        print("converting nco data to two's complement")
-        ys = [twos_comp(y, 24) for y in ys]
-
     return ys
-
-def twos_comp(val, bits):
-    if (val & (1 << (bits - 1))) != 0: # if sign bit is set e.g., 8bit: 128-255
-        val = val - (1 << bits)        # compute negative value
-    return val
 
 
 # - gateware ------------------------------------------------------------------

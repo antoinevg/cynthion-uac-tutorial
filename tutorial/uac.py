@@ -167,11 +167,16 @@ class USBAudioClass2Device(wiring.Component):
             max_packet_size=4,
         )
 
+        # debug
+        self.debug = Signal(8)
+
         super().__init__({
             "input0"  : In(bit_depth),
             "input1"  : In(bit_depth),
             "output0" : Out(bit_depth),
             "output1" : Out(bit_depth),
+            "ordy0"   : Out(1),
+            "ordy1"   : Out(1),
         })
 
 
@@ -465,24 +470,19 @@ class USBAudioClass2Device(wiring.Component):
             m.d.usb += got_sample.eq(0)
 
         # dump current sample to corresponding output
-        with m.If(got_sample & (channel == 0)):
+        with m.If(got_sample):
             with m.If(channel == 0):
+                m.d.comb += self.ordy0.eq(1)
                 m.d.usb += self.output0.eq(sample)
             with m.Else():
+                m.d.comb += self.ordy1.eq(1)
                 m.d.usb += self.output1.eq(sample)
 
         # debug
-        # debug0 = platform.request("user_pmod", 0)
-        # debug1 = platform.request("user_pmod", 1)
-        # m.d.comb += [
-        #     debug0.oe.eq(1),
-        #     debug1.oe.eq(1),
-        # ]
-
-        # m.d.comb += debug0.o[0:4].eq(state)
-        # m.d.comb += debug0.o[5].eq(first)
-        # m.d.comb += debug0.o[6].eq(got_sample)
-        # m.d.comb += debug0.o[7].eq(channel)
+        m.d.comb += self.debug[0:4].eq(state)
+        m.d.comb += self.debug[5].eq(first)
+        m.d.comb += self.debug[6].eq(got_sample)
+        m.d.comb += self.debug[7].eq(channel)
 
         # m.d.comb += debug1.o.eq(sample[0:8])
         #m.d.comb += debug1.o[0].eq(sample[0:8]   != 0)

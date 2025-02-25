@@ -52,7 +52,7 @@ class DAC(wiring.Component):
         self.width         = width
         self.signed        = signed
 
-        self.sync          = Signal()
+        self.debug         = Signal(8)
 
 
     def elaborate(self, platform):
@@ -67,8 +67,6 @@ class DAC(wiring.Component):
         #m.d.comb += channel_0.input.eq(self.input)
         m.d.comb += self.output.eq(channel_0.output)
         m.d.comb += channel_0.stb.eq(clock.stb_r)
-
-        m.d.comb += self.sync.eq(ClockSignal("sync"))
 
         timer = Signal(range(self.sample_cycles))
 
@@ -94,7 +92,12 @@ class DAC(wiring.Component):
                 m.d.comb += channel_0.update.eq(1)
                 m.next = "WAIT"
 
-
+        # debug
+        m.d.comb += [
+            self.debug[0].eq(ClockSignal("sync")),
+            self.debug[1].eq(timer == 0),
+            self.debug[2].eq(channel_0.update),
+        ]
 
 
         return m
