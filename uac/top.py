@@ -139,22 +139,22 @@ class Top(Elaboratable):
 
         # Connect the VU meter's output to Cynthion USER LEDs.
         def logscale(x):
-            U = (2**24) - 1
-            y = (10**(x/10)) / 10
+            U = (2.**24) - 1.
+            y = (10.**(x/10.)) / 10.
             l = int(y * U)
             return l
         leds: Signal(6) = Cat(platform.request("led", n).o for n in range(0, 6))
-        with m.If(vu.output >= 0):
-            m.d.comb += leds[0].eq(1)
         with m.If(vu.output >= logscale(0)):
+            m.d.comb += leds[0].eq(1)
+        with m.If(vu.output >= logscale(0.5)):
             m.d.comb += leds[1].eq(1)
         with m.If(vu.output >= logscale(1)):
             m.d.comb += leds[2].eq(1)
-        with m.If(vu.output >= logscale(2)):
+        with m.If(vu.output >= logscale(1.5)):
             m.d.comb += leds[3].eq(1)
-        with m.If(vu.output >= logscale(3)):
+        with m.If(vu.output >= logscale(2)):
             m.d.comb += leds[4].eq(1)
-        with m.If(vu.output >= logscale(4)):
+        with m.If(vu.output >= logscale(3)):
             m.d.comb += leds[5].eq(1)
 
         # Debug: Signals
