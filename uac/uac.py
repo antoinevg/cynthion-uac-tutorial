@@ -1,4 +1,6 @@
+import logging
 import os
+import sys
 
 from amaranth                             import *
 from amaranth.lib                         import wiring
@@ -34,7 +36,7 @@ from .nco                                 import NCO, sinusoid_lut
 class RequestHandler(USBRequestHandler):
     """ USB Audio Class Request Handler """
 
-    def __init__(self, sample_rate=48000):
+    def __init__(self, sample_rate):
         super().__init__()
 
         self.sample_rate = int(sample_rate)
@@ -138,33 +140,43 @@ class RequestHandler(USBRequestHandler):
 class USBAudioClass2Device(wiring.Component):
     """ USB Audio Class 2 Audio Interface Device """
 
-    def __init__(self, sample_rate=48000, bit_depth=24, channels=2, domain="usb"):
+    def __init__(self, sample_rate, bit_depth, channels, domain="usb"):
         self.sample_rate = sample_rate
         self.bit_depth   = bit_depth
         self.channels    = channels
         self.domain      = domain
 
-        self.subslot_size = 4
-        self.transfers_per_microframe = int(224 // 8 * channels)
+        if self.bit_depth == 24:
+            self.subslot_size = 4
+        elif bit_depth in [8, 16, 32]:
+            self.subslot_size = bit_depth / 8
+        else:
+            logging.error(f"Invalid bit_depth '{bit_depth}'. Supported values are 8, 16, 24, 32")
+            sys.exit(1)
 
-        self.lut_length  = 512 # TODO
+        self.bytes_per_microframe = int(self.sample_rate // 8000 * self.subslot_size * self.channels)
+        if self.bytes_per_microframe > 1024:
+            logging.error(f"Configuration requires > 1024 bytes per microframe: {self.bytes_per_microframe}")
+            sys.exit(1)
+
+        logging.info(f"bytes_per_microframe: {self.bytes_per_microframe}")
 
         # EP 0x01 OUT - audio from host
         self.ep1_out = USBIsochronousStreamOutEndpoint(
             endpoint_number=1,
-            max_packet_size=self.transfers_per_microframe,
+            max_packet_size=self.bytes_per_microframe,
         )
 
-        # EP 2 0x82 IN - audio to host
-        self.ep2_in = USBIsochronousStreamInEndpoint(
+        # EP 0x82 IN - feedback to host
+        self.ep2_in = USBIsochronousInEndpoint(
             endpoint_number=2,
-            max_packet_size=self.transfers_per_microframe,
+            max_packet_size=4,
         )
 
-        # EP 0x83 IN - feedback to host
-        self.ep3_in = USBIsochronousInEndpoint(
+        # EP 0x83 IN - audio to host
+        self.ep3_in = USBIsochronousStreamInEndpoint(
             endpoint_number=3,
-            max_packet_size=4,
+            max_packet_size=self.bytes_per_microframe,
         )
 
         # debug
@@ -205,7 +217,7 @@ class USBAudioClass2Device(wiring.Component):
 
             # interface association descriptor
             i = uac2.InterfaceAssociationDescriptorEmitter()
-            i.bInterfaceCount = 3 # audio control, audio input, audio output
+            i.bInterfaceCount = 3 # audio output, audio control, audio input
             c.add_subordinate_descriptor(i)
 
             # standard audio control interface descriptor
@@ -292,7 +304,7 @@ class USBAudioClass2Device(wiring.Component):
             audioOutEndpoint.bmAttributes         = USBTransferType.ISOCHRONOUS  | \
                                                     (USBSynchronizationType.ASYNC << 2) | \
                                                     (USBUsageType.DATA << 4)
-            audioOutEndpoint.wMaxPacketSize = self.transfers_per_microframe
+            audioOutEndpoint.wMaxPacketSize = self.bytes_per_microframe
             audioOutEndpoint.bInterval       = 1
             c.add_subordinate_descriptor(audioOutEndpoint)
 
@@ -302,7 +314,7 @@ class USBAudioClass2Device(wiring.Component):
 
             #   -- Endpoint Descriptor (Feedback IN)
             feedbackInEndpoint = standard.EndpointDescriptorEmitter()
-            feedbackInEndpoint.bEndpointAddress  = USBDirection.IN.to_endpoint_address(3) # EP 0x83 IN
+            feedbackInEndpoint.bEndpointAddress  = USBDirection.IN.to_endpoint_address(2) # EP 0x82 IN
             feedbackInEndpoint.bmAttributes      = USBTransferType.ISOCHRONOUS \
                                                    | (USBSynchronizationType.NONE << 2)  \
                                                    | (USBUsageType.FEEDBACK << 4)
@@ -341,11 +353,11 @@ class USBAudioClass2Device(wiring.Component):
 
             #   -- Endpoint Descriptor (Audio IN to host)
             audioOutEndpoint = standard.EndpointDescriptorEmitter()
-            audioOutEndpoint.bEndpointAddress = USBDirection.IN.to_endpoint_address(2) # EP 0x82 IN
+            audioOutEndpoint.bEndpointAddress = USBDirection.IN.to_endpoint_address(3) # EP 0x83 IN
             audioOutEndpoint.bmAttributes     = USBTransferType.ISOCHRONOUS  \
                 | (USBSynchronizationType.ASYNC << 2) \
                 | (USBUsageType.DATA << 4)
-            audioOutEndpoint.wMaxPacketSize   = self.transfers_per_microframe
+            audioOutEndpoint.wMaxPacketSize   = self.bytes_per_microframe
             audioOutEndpoint.bInterval        = 1
             c.add_subordinate_descriptor(audioOutEndpoint)
 
@@ -367,6 +379,7 @@ class USBAudioClass2Device(wiring.Component):
         # Add our standard control endpoint to the device.
         descriptors = self.create_descriptors()
         ep_control = usb.add_control_endpoint()
+        #ep_control.add_standard_request_handlers(descriptors)
         ep_control.add_standard_request_handlers(descriptors, blacklist=[
             lambda setup: (setup.type == USBRequestType.STANDARD) &
                           (setup.request == USBStandardRequests.SET_INTERFACE)
@@ -391,8 +404,8 @@ class USBAudioClass2Device(wiring.Component):
         # Connect our device as a high speed device.
         m.d.comb += [
             ep1_out.stream.ready .eq(1),
-            ep2_in.bytes_in_frame.eq(self.bit_depth * self.channels), # 2x 24 bit samples = 48 bytes
-            ep3_in.bytes_in_frame.eq(4),  # feedback is 32 bits = 4 bytes
+            ep2_in.bytes_in_frame.eq(4),  # feedback is 32 bits = 4 bytes
+            ep3_in.bytes_in_frame.eq(self.bytes_per_microframe), # fs / 8000 * subslot_size * channels
             usb.connect          .eq(1),
             usb.full_speed_only  .eq(0),
         ]
@@ -491,7 +504,21 @@ class USBAudioClass2Device(wiring.Component):
         #m.d.comb += debug1.o[3].eq(sample[24:32] != 0)
 
 
-        # - ep2_in - audio to host --------------------------------------------
+        # - ep2_in - feedback to host -----------------------------------------
+
+        # TODO
+
+        feedbackValue = Signal(32)
+        bitPos        = Signal(5)
+
+        m.d.comb += [
+            feedbackValue.eq(self.bit_depth << 14),
+            bitPos.eq(ep2_in.address << 3),
+            ep2_in.value.eq(0xff & (feedbackValue >> bitPos)),
+        ]
+
+
+        # - ep3_in - audio to host --------------------------------------------
 
         # frame counters
         next_channel = Signal()
@@ -512,27 +539,13 @@ class USBAudioClass2Device(wiring.Component):
 
         # stream frame
         m.d.comb += [
-            ep2_in.stream.valid.eq(1),
-            ep2_in.stream.payload.eq(frame.word_select(next_byte, 8)),
+            ep3_in.stream.valid.eq(1),
+            ep3_in.stream.payload.eq(frame.word_select(next_byte, 8)),
         ]
-        with m.If(ep2_in.stream.ready):
+        with m.If(ep3_in.stream.ready):
             m.d.usb += next_byte.eq(next_byte + 1)
             with m.If(next_byte == 3):
                 m.d.usb += next_channel.eq(~next_channel)
-
-
-        # - ep3_in - feedback to host -----------------------------------------
-
-        # TODO
-
-        feedbackValue = Signal(32)
-        bitPos        = Signal(5)
-
-        m.d.comb += [
-            feedbackValue.eq(self.bit_depth << 14),
-            bitPos.eq(ep3_in.address << 3),
-            ep3_in.value.eq(0xff & (feedbackValue >> bitPos)),
-        ]
 
 
         return DomainRenamer({"usb": self.domain})(m)
