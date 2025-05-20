@@ -252,6 +252,8 @@ class USBAudioClass2Device(wiring.Component):
         descriptors = self.create_descriptors()
         ep_control = usb.add_control_endpoint()
         ep_control.add_standard_request_handlers(descriptors, blacklist=[
+            # We have multiple interfaces so we will need to handle
+            # SET_INTERFACE ourselves.
             lambda setup: (setup.type == USBRequestType.STANDARD) &
                           (setup.request == USBStandardRequests.SET_INTERFACE)
         ])
@@ -448,84 +450,89 @@ class UAC2RequestHandler(USBRequestHandler):
             domain="usb",
         )
 
-        #
-        # Class request handlers.
-        #
-        with m.If(setup.type == USBRequestType.STANDARD):
-            with m.If((setup.recipient == USBRequestRecipient.INTERFACE) &
-                      (setup.request == USBStandardRequests.SET_INTERFACE)):
+        # The requests we'll be handling.
+        standard_set_interface = (setup.type == USBRequestType.STANDARD) & \
+                                 (setup.recipient == USBRequestRecipient.INTERFACE) & \
+                                 (setup.request == USBStandardRequests.SET_INTERFACE)
+        uac2_request_range = (setup.type == USBRequestType.CLASS) & \
+                             (setup.request == AudioClassSpecificRequestCodes.RANGE)
+        uac2_request_cur   = (setup.type == USBRequestType.CLASS) & \
+                             (setup.request == AudioClassSpecificRequestCodes.CUR)
+        request_clock_freq = (setup.value == 0x100) & (setup.index == 0x0100)
 
-                # claim interface
-                if hasattr(interface, "claim"):
-                    m.d.comb += interface.claim.eq(1)
+        with m.If(standard_set_interface):
+            # Because we have multiple interfaces ('quiet' and 'active' we need
+            # to handle SET_INTERFACE ourselves.
+            #
+            # On a more complex interface we could use this as an opportunity to
+            # control pre-amp power or other functionality.
 
-                # Always ACK the data out...
-                with m.If(interface.rx_ready_for_response):
-                    m.d.comb += interface.handshakes_out.ack.eq(1)
-
-                # ... and accept whatever the request was.
-                with m.If(interface.status_requested):
-                    m.d.comb += self.send_zlp()
-
-        with m.Elif(setup.type == USBRequestType.CLASS):
             # claim interface
             if hasattr(interface, "claim"):
                 m.d.comb += interface.claim.eq(1)
 
-            request_clock_freq = (setup.value == 0x100) & (setup.index == 0x0100)
+            # Always ACK the data out...
+            with m.If(interface.rx_ready_for_response):
+                m.d.comb += interface.handshakes_out.ack.eq(1)
 
-            with m.Switch(setup.request):
-                with m.Case(AudioClassSpecificRequestCodes.RANGE):
-                    m.d.comb += transmitter.stream.attach(self.interface.tx)
+            # ... and accept whatever the request was.
+            with m.If(interface.status_requested):
+                m.d.comb += self.send_zlp()
 
-                    with m.If(request_clock_freq):
-                        m.d.comb += [
-                            Cat(transmitter.data)   .eq(
-                                Cat(
-                                   Const(0x1, 16),              # num subranges
-                                   Const(self.sample_rate, 32), # MIN
-                                   Const(self.sample_rate, 32), # MAX
-                                   Const(0, 32),                # RES
-                                )
-                            ),
-                            transmitter.max_length  .eq(setup.length)
-                        ]
-                    with m.Else():
-                        m.d.comb += interface.handshakes_out.stall.eq(1)
+        with m.Elif(uac2_request_range & request_clock_freq):
+            # Return the valid values for the interface's clock.
 
-                    # ... trigger it to respond when data's requested...
-                    with m.If(interface.data_requested):
-                        m.d.comb += transmitter.start.eq(1)
+            # claim interface
+            if hasattr(interface, "claim"):
+                m.d.comb += interface.claim.eq(1)
 
-                    # ... and ACK our status stage.
-                    with m.If(interface.status_requested):
-                        m.d.comb += interface.handshakes_out.ack.eq(1)
+            m.d.comb += transmitter.stream.attach(self.interface.tx)
+            m.d.comb += [
+                Cat(transmitter.data)   .eq(
+                    Cat(
+                       Const(0x1, 16),              # num subranges
+                       Const(self.sample_rate, 32), # MIN
+                       Const(self.sample_rate, 32), # MAX
+                       Const(0, 32),                # RES
+                    )
+                ),
+                transmitter.max_length  .eq(setup.length)
+            ]
 
-                with m.Case(AudioClassSpecificRequestCodes.CUR):
-                    m.d.comb += transmitter.stream.attach(self.interface.tx)
-                    with m.If(request_clock_freq & (setup.length == 4)):
-                        m.d.comb += [
-                            Cat(transmitter.data[0:4]).eq(
-                                Const(self.sample_rate, 32)
-                            ),
-                            transmitter.max_length.eq(4)
-                        ]
-                    with m.Else():
-                        m.d.comb += interface.handshakes_out.stall.eq(1)
+            # ... trigger it to respond when data's requested...
+            with m.If(interface.data_requested):
+                m.d.comb += transmitter.start.eq(1)
 
-                    # ... trigger it to respond when data's requested...
-                    with m.If(interface.data_requested):
-                        m.d.comb += transmitter.start.eq(1)
+            # ... and ACK our status stage.
+            with m.If(interface.status_requested):
+                m.d.comb += interface.handshakes_out.ack.eq(1)
 
-                    # ... and ACK our status stage.
-                    with m.If(interface.status_requested):
-                        m.d.comb += interface.handshakes_out.ack.eq(1)
+        with m.Elif(uac2_request_cur & request_clock_freq):
+            # Return the current value of the interface's clock
 
-                with m.Default():
-                    #
-                    # Stall unhandled requests.
-                    #
-                    with m.If(interface.status_requested | interface.data_requested):
-                        m.d.comb += interface.handshakes_out.stall.eq(1)
+            # claim interface
+            if hasattr(interface, "claim"):
+                m.d.comb += interface.claim.eq(1)
+
+            m.d.comb += transmitter.stream.attach(self.interface.tx)
+            m.d.comb += [
+                Cat(transmitter.data[0:4]).eq(
+                    Const(self.sample_rate, 32)
+                ),
+                transmitter.max_length.eq(4)
+            ]
+
+            # ... trigger it to respond when data's requested...
+            with m.If(interface.data_requested):
+                m.d.comb += transmitter.start.eq(1)
+
+            # ... and ACK our status stage.
+            with m.If(interface.status_requested):
+                m.d.comb += interface.handshakes_out.ack.eq(1)
+
+        # Stall any unsupported requests.
+        with m.Else():
+            with m.If(interface.status_requested | interface.data_requested):
+                m.d.comb += interface.handshakes_out.stall.eq(1)
 
         return m
