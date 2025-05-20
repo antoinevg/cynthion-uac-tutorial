@@ -442,9 +442,9 @@ class UAC2RequestHandler(USBRequestHandler):
         setup             = self.interface.setup
 
         m.submodules.transmitter = transmitter = StreamSerializer(
-            data_length=14,
+            data_length=14,     # The maximum length of data to be sent.
             stream_type=USBInStreamInterface,
-            max_length_width=14,
+            max_length_width=4, # Provides a `max_length` signal to limit total length transmitted
             domain="usb",
         )
 
