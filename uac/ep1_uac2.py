@@ -3,7 +3,7 @@ import os
 import sys
 
 from amaranth                             import *
-from amaranth.lib                         import wiring
+from amaranth.lib                         import data, stream, wiring
 from amaranth.lib.wiring                  import In, Out
 
 from usb_protocol.emitters                import DeviceDescriptorCollection
@@ -55,12 +55,14 @@ class USBAudioClass2Device(wiring.Component):
         logging.info(f"bytes_per_microframe: {self.bytes_per_microframe}")
 
         super().__init__({
-            "input0"  : In(bit_depth),
-            "input1"  : In(bit_depth),
-            "output0" : Out(bit_depth),
-            "output1" : Out(bit_depth),
-            "ordy0"   : Out(1),
-            "ordy1"   : Out(1),
+            "inputs"  : In  (stream.Signature(self.bit_depth)).array(channels),
+            "outputs" : Out (stream.Signature(self.bit_depth)).array(channels),
+
+            # TODO lose these
+            "output0" : Out (bit_depth),
+            "output1" : Out (bit_depth),
+            "ordy0"   : Out (1),
+            "ordy1"   : Out (1),
         })
 
 
@@ -353,7 +355,7 @@ class USBAudioClass2Device(wiring.Component):
 
                     with m.Else():
                         m.d.usb += subslot[24:32].eq(ep1_out.stream.payload.data) # byte3
-                        m.d.usb += got_sample.eq(1)
+                        m.d.usb += got_sample.eq(1) # TODO m.d.comb ?
                         m.d.usb += sample.eq(Cat(subslot[8:24], ep1_out.stream.payload.data))
                         m.next = "B0"
 
@@ -371,7 +373,7 @@ class USBAudioClass2Device(wiring.Component):
             m.d.usb += subslot.eq(0)
             m.d.usb += got_sample.eq(0)
 
-        # dump current sample to corresponding output
+        # dump current sample to corresponding output TODO - lose
         with m.If(got_sample):
             with m.If(channel == 0):
                 m.d.comb += self.ordy0.eq(1)
@@ -379,6 +381,15 @@ class USBAudioClass2Device(wiring.Component):
             with m.Else():
                 m.d.comb += self.ordy1.eq(1)
                 m.d.usb += self.output1.eq(sample)
+
+        # dump samples to output streams
+        output_streams = self.outputs
+        m.d.comb += [
+            output_streams[0].valid   .eq(got_sample & (channel == 0)), # driven by producer (that would be me)
+            output_streams[0].payload .eq(sample),
+            output_streams[1].valid   .eq(got_sample & (channel == 1)), # driven by producer (that would be me)
+            output_streams[1].payload .eq(sample),
+        ]
 
 
         # - ep2_in - feedback to host -----------------------------------------
@@ -397,36 +408,39 @@ class USBAudioClass2Device(wiring.Component):
 
         # - ep3_in - audio to host --------------------------------------------
 
+        # input streams
+        input_streams = self.inputs
+
         # frame counters
-        next_channel = Signal()
+        next_channel = Signal(1)
         next_byte = Signal(2)
 
-        # frame nco data
-        #
-        # Format is:
+        # Subslot Frame Format for 24-bit int is:
         #    00:08  - padding
         #    08:15  - msb
         #    16:23
         #    24:31  - lsb
-        frame = Signal(self.subslot_size * 8)
-        with m.If(next_channel == 0):
-            m.d.comb += frame[8:].eq(self.input0)
-        with m.Else():
-            m.d.comb += frame[8:].eq(self.input1)
+        subslot = Signal(32)
 
-        # stream frame
+        with m.If(next_channel == 0):
+            with m.If(next_byte == 3):
+                m.d.comb += input_streams[0].ready.eq(1)
+            m.d.comb += subslot[8:].eq(input_streams[0].payload)
+        with m.Else():
+            with m.If(next_byte == 3):
+                m.d.comb += input_streams[1].ready.eq(1)
+            m.d.comb += subslot[8:].eq(input_streams[1].payload)
+
         m.d.comb += [
-            ep3_in.stream.valid.eq(1),
-            ep3_in.stream.payload.eq(frame.word_select(next_byte, 8)),
+            ep3_in.stream.valid.eq(1), # driven by producer (moi-même)
+            ep3_in.stream.payload.eq(subslot.word_select(next_byte, 8)),
         ]
         with m.If(ep3_in.stream.ready):
             m.d.usb += next_byte.eq(next_byte + 1)
             with m.If(next_byte == 3):
                 m.d.usb += next_channel.eq(~next_channel)
 
-
         return m
-
 
 
 class UAC2RequestHandler(USBRequestHandler):

@@ -14,8 +14,8 @@ from luna                                 import top_level_cli
 
 from .clockgen                            import ClockGen
 from .dac                                 import DAC
-from .nco                                 import NCO, sinusoid_lut
-from .uac                                 import USBAudioClass2Device
+from .nco                                 import NCO_old as NCO, sinusoid_lut
+from .ep2_uac2                            import USBAudioClass2Device
 from .vu                                  import VU
 
 class Top(Elaboratable):
@@ -27,10 +27,10 @@ class Top(Elaboratable):
         }
 
         self.sample_rate         = 48e3
-        #self.sample_rate         = 768e3
         self.bit_depth           = 24
         self.channels            = 2
         self.lut_length          = 32768
+
         self.dac_clk_freq        = self.clock_frequencies["usb"]  * 1e6
         self.dac_modulation_freq = 30e6 # pulse  cycles
         self.dac_sample_rate     = 48e3 # sample cycles
@@ -63,23 +63,22 @@ class Top(Elaboratable):
         )
 
         # Instantiate our sin LUT.
+        #gain  = 1.0
+        gain = 0.794328 # -2dB
+        #gain = 0.501187 # - 6dB
         m.submodules.lut = lut = Memory(
             shape  = signed(self.bit_depth),
             depth  = self.lut_length,
-            init   = sinusoid_lut(self.bit_depth, self.lut_length, gain=0.501187, signed=True),
+            init   = sinusoid_lut(self.bit_depth, self.lut_length, gain=gain, signed=True),
         )
-        #gain = 0.794328 # -2dB
-        #gain = 0.501187 # - 6dB
 
         # Instantiate our NCOs.
+        fs = self.dac_clk_freq
         m.submodules.nco0 = nco0 = DomainRenamer({"sync": "usb"})(NCO(lut))
         m.submodules.nco1 = nco1 = DomainRenamer({"sync": "usb"})(NCO(lut))
-        phi0_delta   = int(100. * nco0.phi_tau / self.dac_clk_freq)
-        # TODO why go crazy when > 4096 when my LUT is 32768 samples?
-        phi1_delta   = int(1000. * nco1.phi_tau / self.dac_clk_freq)
         m.d.usb += [
-            nco0.phi_delta.eq(phi0_delta),
-            nco1.phi_delta.eq(phi1_delta),
+            nco0.phi_delta.eq(int(1000. * nco0.phi_tau / fs)),
+            nco1.phi_delta.eq(int(10000. * nco1.phi_tau / fs)),
         ]
 
         # Instantiate our VU meter.
