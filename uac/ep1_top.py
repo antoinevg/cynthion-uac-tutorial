@@ -85,13 +85,14 @@ class Top(Elaboratable):
 
         # Connect our UAC device's outputs to our ∆Σ DAC's inputs
         wiring.connect(m, uac2.outputs[0], dac.inputs[0])
+        wiring.connect(m, uac2.outputs[1], dac.inputs[1])
 
         # Connect our ∆Σ DAC outputs to our USER PMOD pins.
         pmod1 = platform.request("user_pmod", 1)
         m.d.comb += [
             pmod1.oe.eq(1),
-            pmod1.o[0].eq(dac.output),
-            pmod1.o[1].eq(dac.output),
+            pmod1.o[0].eq(dac.outputs[0]),
+            pmod1.o[1].eq(dac.outputs[1]),
         ]
         # ---------------------------------------------------------------------
 

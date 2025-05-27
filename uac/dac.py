@@ -9,8 +9,8 @@ from .clockgen            import ClockGen
 class Channel(wiring.Component):
     def __init__(self, bit_depth=16, signed=False):
         super().__init__({
-            "input":  In(bit_depth),
-            "output": Out(1),
+            "input"  : In  (bit_depth),
+            "output" : Out (1),
         })
 
         self.bit_depth   = bit_depth
@@ -41,15 +41,10 @@ class Channel(wiring.Component):
 
 class DAC(wiring.Component):
     def __init__(self, sample_rate, bit_depth, channels, clock_frequency, signed=False):
-        assert (bit_depth // 8) in (1, 2, 3, 4)
-
         super().__init__({
             "inputs"  : In  (stream.Signature(bit_depth)).array(channels),
             "outputs" : Out (channels),
-
-            "input": In(bit_depth),
-            "output": Out(1),
-            "latch": Out(1),
+            "latch"   : Out (1),
         })
 
         modulation_freq    = 30e6 # pulse  cycles
@@ -72,9 +67,8 @@ class DAC(wiring.Component):
         )
 
         self.clock         = ClockGen(self.pulse_cycles)
-        self.fifo          = fifo.SyncFIFOBuffered(width=self.bit_depth, depth=128)
-
-        self.debug         = Signal(8)
+        self.fifo_0        = fifo.SyncFIFOBuffered(width=self.bit_depth, depth=128)
+        self.fifo_1        = fifo.SyncFIFOBuffered(width=self.bit_depth, depth=128)
 
 
     def elaborate(self, platform):
@@ -84,15 +78,18 @@ class DAC(wiring.Component):
         print(f"sample_cycles: {self.sample_cycles}")
 
         m.submodules.clock = clock = self.clock
-        m.submodules.fifo  = fifo  = self.fifo
+        m.submodules.fifo_0  = fifo_0  = self.fifo_0
+        m.submodules.fifo_1  = fifo_1  = self.fifo_1
 
         m.submodules.channel_0 = channel_0 = Channel(bit_depth=self.bit_depth, signed=self.signed)
-        m.d.comb += self.output.eq(channel_0.output)
+        m.submodules.channel_1 = channel_1 = Channel(bit_depth=self.bit_depth, signed=self.signed)
         m.d.comb += channel_0.stb.eq(clock.stb_r)
+        m.d.comb += channel_1.stb.eq(clock.stb_r)
 
         timer = Signal(range(self.sample_cycles))
 
-        sample = Signal(self.bit_depth)
+        sample_0 = Signal(self.bit_depth)
+        sample_1 = Signal(self.bit_depth)
         len_channels = 1
 
         with m.FSM():
@@ -107,29 +104,31 @@ class DAC(wiring.Component):
                     m.d.sync += timer.eq(timer - 1)
 
             with m.State("CHANNEL-0-READ-1"):
-                #m.d.sync += channel_0.input.eq(self.input)
-                m.d.sync += channel_0.input.eq(sample)
+                m.d.sync += channel_0.input.eq(sample_0)
+                m.d.sync += channel_1.input.eq(sample_1)
                 m.next = "LATCH"
 
             with m.State("LATCH"):
                 m.d.comb += self.latch.eq(1)
                 m.d.comb += channel_0.update.eq(1)
+                m.d.comb += channel_1.update.eq(1)
                 m.next = "WAIT"
 
-        # connect input streams to fifo
+        # connect input streams to fifo & fifo to channels
         m.d.comb += [
-            fifo.w_en   .eq(self.inputs[0].valid & fifo.w_rdy),
-            fifo.w_data .eq(self.inputs[0].payload),
-            fifo.r_en.eq(self.latch & fifo.r_rdy),
-            sample.eq(fifo.r_data),
+            fifo_0.w_en   .eq(self.inputs[0].valid & fifo_0.w_rdy),
+            fifo_0.w_data .eq(self.inputs[0].payload),
+            fifo_0.r_en.eq(self.latch & fifo_0.r_rdy),
+            sample_0.eq(fifo_0.r_data),
+
+            fifo_1.w_en   .eq(self.inputs[1].valid & fifo_1.w_rdy),
+            fifo_1.w_data .eq(self.inputs[1].payload),
+            fifo_1.r_en.eq(self.latch & fifo_1.r_rdy),
+            sample_1.eq(fifo_1.r_data),
         ]
 
-        # debug
-        m.d.comb += [
-            self.debug[0].eq(ClockSignal("sync")),
-            self.debug[1].eq(timer == 0),
-            self.debug[2].eq(channel_0.update),
-        ]
-
+        # connect channel outputs to dac output
+        m.d.comb += self.outputs[0].eq(channel_0.output)
+        m.d.comb += self.outputs[1].eq(channel_1.output)
 
         return m
