@@ -52,10 +52,9 @@ class NCO(wiring.Component):
         self.phi_bits   = 32
         self.phi_tau    = 1 << self.phi_bits
         self.index_bits = log2_int(lut.depth)
-        #self.fract_bits = self.phi_bits - self.index_bits
 
         super().__init__({
-            "phi_delta" : In  (unsigned(self.phi_bits)), # frequency (in terms of phi_tau)
+            "phi_delta" : In  (signed(self.phi_bits)), # frequency (in terms of phi_tau)
             "output"    : Out (stream.Signature(lut.shape)),
         })
 

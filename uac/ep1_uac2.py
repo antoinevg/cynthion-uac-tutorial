@@ -55,8 +55,8 @@ class USBAudioClass2Device(wiring.Component):
         logging.info(f"bytes_per_microframe: {self.bytes_per_microframe}")
 
         super().__init__({
-            "inputs"  : In  (stream.Signature(self.bit_depth)).array(channels),
-            "outputs" : Out (stream.Signature(self.bit_depth)).array(channels),
+            "inputs"  : In  (stream.Signature(signed(self.bit_depth))).array(channels),
+            "outputs" : Out (stream.Signature(signed(self.bit_depth))).array(channels),
 
             # TODO lose these
             "output0" : Out (bit_depth),
@@ -310,7 +310,6 @@ class USBAudioClass2Device(wiring.Component):
         sample     = Signal(self.bit_depth)
         got_sample = Signal()
         error      = Signal()
-        state      = Signal(8)
 
         # always receive audio from host
         m.d.comb += ep1_out.stream.ready .eq(1)
@@ -318,20 +317,16 @@ class USBAudioClass2Device(wiring.Component):
         # state machine for receiving host audio
         with m.If(ep1_out.stream.valid & ep1_out.stream.ready):
             with m.FSM(domain="usb") as fsm:
-                with m.State("B0"): # msb
-                    m.d.comb += state.eq(1)
-
+                with m.State("B0"):
                     with m.If(first):
                         m.d.usb += channel.eq(0)
                     with m.Else():
                         m.d.usb += channel.eq(channel + 1)
 
-                    m.d.usb += got_sample.eq(0)
                     m.d.usb += subslot[0:8].eq(ep1_out.stream.payload.data)      # byte0  TODO use word_select
                     m.next = "B1"
 
                 with m.State("B1"): # ...
-                    m.d.comb += state.eq(2)
                     with m.If(first):
                         m.next = "ERROR"
 
@@ -340,7 +335,6 @@ class USBAudioClass2Device(wiring.Component):
                         m.next = "B2"
 
                 with m.State("B2"): # ...
-                    m.d.comb += state.eq(4)
                     with m.If(first):
                         m.next = "ERROR"
 
@@ -348,22 +342,17 @@ class USBAudioClass2Device(wiring.Component):
                         m.d.usb += subslot[16:24].eq(ep1_out.stream.payload.data) # byte2
                         m.next = "B3"
 
-                with m.State("B3"): # lsb
-                    m.d.comb += state.eq(8)
+                with m.State("B3"):
                     with m.If(first):
                         m.next = "ERROR"
 
                     with m.Else():
-                        m.d.usb += subslot[24:32].eq(ep1_out.stream.payload.data) # byte3
-                        m.d.usb += got_sample.eq(1) # TODO m.d.comb ?
-                        m.d.usb += sample.eq(Cat(subslot[8:24], ep1_out.stream.payload.data))
+                        m.d.usb += sample.eq(Cat(subslot[8:24], ep1_out.stream.payload.data)) # byte3
+                        m.d.comb += got_sample.eq(1)
                         m.next = "B0"
 
                 with m.State("ERROR"):
-                    m.d.comb += state.eq(16)
                     m.d.comb += error.eq(1)
-
-                    m.d.usb += got_sample.eq(0)
                     m.d.usb += channel.eq(0)
                     m.d.usb += subslot[0:8].eq(ep1_out.stream.payload.data)       # byte0
                     m.next = "B1"
@@ -371,7 +360,6 @@ class USBAudioClass2Device(wiring.Component):
         with m.Else():
             m.d.usb += channel.eq(0)
             m.d.usb += subslot.eq(0)
-            m.d.usb += got_sample.eq(0)
 
         # dump current sample to corresponding output TODO - lose
         with m.If(got_sample):
@@ -415,21 +403,25 @@ class USBAudioClass2Device(wiring.Component):
         next_channel = Signal(1)
         next_byte = Signal(2)
 
-        # Subslot Frame Format for 24-bit int is:
-        #    00:08  - padding
-        #    08:15  - msb
-        #    16:23
-        #    24:31  - lsb
+        # Subslot Frame Format for 24-bit int with subslot_size=4 is:
+        #    00:08  - lsb
+        #    08:15  -
+        #    16:23  - msb
+        #    24:31  - padding
         subslot = Signal(32)
 
         with m.If(next_channel == 0):
             with m.If(next_byte == 3):
                 m.d.comb += input_streams[0].ready.eq(1)
-            m.d.comb += subslot[8:].eq(input_streams[0].payload)
+            m.d.comb += [
+                subslot[8:].eq(input_streams[0].payload)
+            ]
         with m.Else():
             with m.If(next_byte == 3):
                 m.d.comb += input_streams[1].ready.eq(1)
-            m.d.comb += subslot[8:].eq(input_streams[1].payload)
+            m.d.comb += [
+                subslot[8:].eq(input_streams[1].payload)
+            ]
 
         m.d.comb += [
             ep3_in.stream.valid.eq(1), # driven by producer (moi-même)

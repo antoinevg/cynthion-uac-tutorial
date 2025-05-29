@@ -67,8 +67,8 @@ class DAC(wiring.Component):
         )
 
         self.clock         = ClockGen(self.pulse_cycles)
-        self.fifo_0        = fifo.SyncFIFOBuffered(width=self.bit_depth, depth=128)
-        self.fifo_1        = fifo.SyncFIFOBuffered(width=self.bit_depth, depth=128)
+        self.fifo_0        = fifo.SyncFIFOBuffered(width=self.bit_depth, depth=16)
+        self.fifo_1        = fifo.SyncFIFOBuffered(width=self.bit_depth, depth=16)
 
 
     def elaborate(self, platform):
