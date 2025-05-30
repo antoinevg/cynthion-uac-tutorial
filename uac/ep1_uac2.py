@@ -57,12 +57,6 @@ class USBAudioClass2Device(wiring.Component):
         super().__init__({
             "inputs"  : In  (stream.Signature(signed(self.bit_depth))).array(channels),
             "outputs" : Out (stream.Signature(signed(self.bit_depth))).array(channels),
-
-            # TODO lose these
-            "output0" : Out (bit_depth),
-            "output1" : Out (bit_depth),
-            "ordy0"   : Out (1),
-            "ordy1"   : Out (1),
         })
 
 
@@ -312,10 +306,12 @@ class USBAudioClass2Device(wiring.Component):
         error      = Signal()
 
         # always receive audio from host
-        m.d.comb += ep1_out.stream.ready .eq(1)
+        m.d.comb += ep1_out.stream.ready .eq(1) # driven by me, the ep1_out consumer
+
+        out_ready = self.outputs[0].ready | self.outputs[1].ready
 
         # state machine for receiving host audio
-        with m.If(ep1_out.stream.valid & ep1_out.stream.ready):
+        with m.If(ep1_out.stream.valid & out_ready):
             with m.FSM(domain="usb") as fsm:
                 with m.State("B0"):
                     with m.If(first):
@@ -360,15 +356,6 @@ class USBAudioClass2Device(wiring.Component):
         with m.Else():
             m.d.usb += channel.eq(0)
             m.d.usb += subslot.eq(0)
-
-        # dump current sample to corresponding output TODO - lose
-        with m.If(got_sample):
-            with m.If(channel == 0):
-                m.d.comb += self.ordy0.eq(1)
-                m.d.usb += self.output0.eq(sample)
-            with m.Else():
-                m.d.comb += self.ordy1.eq(1)
-                m.d.usb += self.output1.eq(sample)
 
         # dump samples to output streams
         output_streams = self.outputs
