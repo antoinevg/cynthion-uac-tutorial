@@ -1,72 +1,76 @@
+import logging
+
 from amaranth             import *
-from amaranth.lib         import stream, wiring
+from amaranth.lib         import fifo, stream, wiring
 from amaranth.lib.wiring  import In, Out
+from amaranth.utils       import log2_int, ceil_log2
 
-from .                    import clockgen
-
-
-class VU_new(wiring.Component):
-    def __init__(self, bit_depth=24):
-        super().__init__({
-            "input"  : In (stream.Signature(bit_depth)),
-            "output" : Out(unsigned(bit_depth)),
-        })
-
-        self.latch     = Signal()
-        self.bit_depth = bit_depth
-
-    def elaborate(self, platform):
-        m = Module()
-
-        U  = (2**self.bit_depth) - 1
-        dP = int(0.0001   * U)
-        kN = int(0.000001 * U)
-        print(f"dP:{dP}  kN:{kN}")
-
-        c  = Signal.like(self.output)
-        x1 = Signal.like(self.output)
-
-        m.d.comb += x1.eq(abs(self.input))
-        m.d.comb += self.output.eq(x1)
-
-        with m.If(self.latch):
-            with m.If(x1 > c):
-                m.d.sync += c.eq(c * (U - dP) + (x1 * dP))
-            with m.Else():
-                m.d.sync += c.eq(c * (U - kN))
-
-        return m
+from .clockgen            import ClockGen
 
 
 
 class VU(wiring.Component):
-    def __init__(self, bit_depth=24):
+    def __init__(self, sample_rate, bit_depth, clock_frequency, segments):
         super().__init__({
-            "input"  : In(signed(bit_depth)),
-            "output" : Out(unsigned(bit_depth)),
+            "input"  : In  (stream.Signature(signed(bit_depth))),
+            "output" : Out (unsigned(bit_depth)),
+            "leds"   : Out (segments),
         })
 
-        self.latch     = Signal()
         self.bit_depth = bit_depth
+        self.segments  = segments
+
+        self.sample_cycles = ClockGen.derive(
+            clock_name = "sample",
+            input_hz   = clock_frequency,
+            output_hz  = sample_rate,
+            logger     = logging,
+            max_deviation_ppm = 0,
+        )
+
+        self.clock = ClockGen(self.sample_cycles)
+        self.fifo  = fifo.SyncFIFOBuffered(width=bit_depth, depth=16)
+
+
+    def logscale(self, x):
+        """ scale an input value logarithmically """
+        U = (2. ** (self.bit_depth - 1)) - 1.
+        y = (self.segments ** (x / self.segments)) / self.segments
+        l = int(y * U)
+        return l
+
 
     def elaborate(self, platform):
         m = Module()
 
-        U  = (2**self.bit_depth) - 1
-        dP = int(0.0001   * U)
-        kN = int(0.000001 * U)
-        print(f"dP:{dP}  kN:{kN}")
+        m.submodules.clock = clock = self.clock
+        m.submodules.fifo  = fifo  = self.fifo
 
-        c  = Signal.like(self.output)
-        x1 = Signal.like(self.output)
+        # connect input to fifo
+        wiring.connect(m, wiring.flipped(self.input), fifo.w_stream)
 
-        m.d.comb += x1.eq(abs(self.input))
-        m.d.comb += self.output.eq(x1)
+        # always accept data from producer
+        m.d.comb += self.input.ready.eq(1)
 
-        with m.If(self.latch):
-            with m.If(x1 > c):
-                m.d.sync += c.eq(c * (U - dP) + (x1 * dP))
+        # calculate vu raw output signal
+        with m.If(clock.stb_r):
+            m.d.comb += fifo.r_en.eq(fifo.r_rdy)
+            m.d.sync += self.output.eq(abs(fifo.r_data.as_signed()))
+
+            # led control
+            with m.If(self.output >= self.logscale(5)):
+                m.d.sync += self.leds.eq(0b111111)
+            with m.Elif(self.output >= self.logscale(4)):
+                m.d.sync += self.leds.eq(0b011111)
+            with m.Elif(self.output >= self.logscale(3)):
+                m.d.sync += self.leds.eq(0b001111)
+            with m.Elif(self.output >= self.logscale(2)):
+                m.d.sync += self.leds.eq(0b000111)
+            with m.Elif(self.output >= self.logscale(1)):
+                m.d.sync += self.leds.eq(0b000011)
+            with m.Elif(self.output > self.logscale(0)):
+                m.d.sync += self.leds.eq(0b000001)
             with m.Else():
-                m.d.sync += c.eq(c * (U - kN))
+                m.d.sync += self.leds.eq(0b000000)
 
         return m

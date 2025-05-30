@@ -98,53 +98,27 @@ class Top(Elaboratable):
 
 
         # Instantiate our VU meter.
-        #m.submodules.vu = vu = DomainRenamer({"sync": "usb"})(VU(bit_depth=self.bit_depth))
+        m.submodules.vu = vu = DomainRenamer({"sync": "usb"})(
+            VU(
+                sample_rate     = self.sample_rate,
+                bit_depth       = self.bit_depth,
+                clock_frequency = self.clock_frequencies["usb"]  * 1e6,
+                segments        = 6,
+            )
+        )
 
         # Connect the UAC device's outputs to our VU meter.
-        #wiring.connect(m, uac2.outputs[0], vu.input)
-        #m.d.comb += vu.latch.eq(dac.latch)
+        wiring.connect(m, uac2.outputs[0], vu.input)
 
-        # Connect the UAC device's outputs to our VU meter.
-        # m.submodules.vu_fifo = vu_fifo = fifo.SyncFIFOBuffered(width=self.bit_depth, depth=128)
-        # m.d.comb += [
-        #     vu_fifo.w_en   .eq(uac2.ordy0 & vu_fifo.w_rdy),
-        #     vu_fifo.w_data .eq(uac2.output0),
-        #     vu_fifo.r_en.eq(vu_fifo.r_rdy),
-        #     vu.input.eq(vu_fifo.r_data),
-        #     vu.latch.eq(vu_fifo.r_rdy),
-        # ]
-
-        # Connect the VU meter's output to Cynthion USER LEDs.
-        # def logscale(x):
-        #     U = (2.**24) - 1.
-        #     y = (10.**(x/10.)) / 10.
-        #     l = int(y * U)
-        #     return l
-        # #for n in range(11):
-        # #    print(f"{n} => {hex(logscale(n))}")
-        # leds: Signal(6) = Cat(platform.request("led", n).o for n in range(0, 6))
-        # with m.If(vu.output >= logscale(4)):
-        #     m.d.comb += leds[0].eq(1)
-        # with m.If(vu.output >= logscale(5)):
-        #     m.d.comb += leds[1].eq(1)
-        # with m.If(vu.output >= logscale(6)):
-        #     m.d.comb += leds[2].eq(1)
-        # with m.If(vu.output >= logscale(7)):
-        #     m.d.comb += leds[3].eq(1)
-        # with m.If(vu.output >= logscale(8)):
-        #     m.d.comb += leds[4].eq(1)
-        # with m.If(vu.output >= logscale(9)):
-        #     m.d.comb += leds[5].eq(1)
-
+        # Connect the VU meter's led output to Cynthion USER LEDs.
+        leds: Signal(6) = Cat(platform.request("led", n).o for n in range(0, 6))
+        m.d.comb += leds.eq(vu.leds)
 
         # debug
         debug = platform.request("user_pmod", 0)
         m.d.comb += debug.oe.eq(1)
         m.d.comb += [
-            #debug.o[0]   .eq(vu.debug),
-            #debug.o[1:6] .eq(leds),
-
-            #debug.o   .eq(vu.debug),
+            #debug.o[0] .eq(leds),
         ]
 
         return m
