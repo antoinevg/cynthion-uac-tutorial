@@ -47,12 +47,14 @@ class USBAudioClass2Device(wiring.Component):
             logging.error(f"Invalid bit_depth '{bit_depth}'. Supported values are 8, 16, 24, 32")
             sys.exit(1)
 
-        self.bytes_per_microframe = int(self.sample_rate // 8000 * self.subslot_size * self.channels)
+        samples_per_microframe = self.sample_rate / 8000
+        bytes_per_microframe   = samples_per_microframe * self.subslot_size * self.channels
+        logging.info(f"bytes_per_microframe: {bytes_per_microframe}")
+
+        self.bytes_per_microframe = int(bytes_per_microframe)
         if self.bytes_per_microframe > 1024:
             logging.error(f"Configuration requires > 1024 bytes per microframe: {self.bytes_per_microframe}")
             sys.exit(1)
-
-        logging.info(f"bytes_per_microframe: {self.bytes_per_microframe}")
 
         super().__init__({
             "inputs"  : In  (stream.Signature(signed(self.bit_depth))).array(channels),
@@ -172,7 +174,7 @@ class USBAudioClass2Device(wiring.Component):
             audioOutEndpoint.bmAttributes         = USBTransferType.ISOCHRONOUS \
                                                   | (USBSynchronizationType.ASYNC << 2) \
                                                   | (USBUsageType.DATA << 4)
-            audioOutEndpoint.wMaxPacketSize = self.bytes_per_microframe
+            audioOutEndpoint.wMaxPacketSize = self.bytes_per_microframe + 1
             audioOutEndpoint.bInterval       = 1
             c.add_subordinate_descriptor(audioOutEndpoint)
 
@@ -225,7 +227,7 @@ class USBAudioClass2Device(wiring.Component):
             audioInEndpoint.bmAttributes     = USBTransferType.ISOCHRONOUS  \
                                               | (USBSynchronizationType.ASYNC << 2) \
                                               | (USBUsageType.DATA << 4)
-            audioInEndpoint.wMaxPacketSize   = self.bytes_per_microframe
+            audioInEndpoint.wMaxPacketSize   = self.bytes_per_microframe + 1
             audioInEndpoint.bInterval        = 1
             c.add_subordinate_descriptor(audioInEndpoint)
 
@@ -268,7 +270,7 @@ class USBAudioClass2Device(wiring.Component):
         # EP 0x01 OUT - audio from host
         ep1_out = USBIsochronousStreamOutEndpoint(
             endpoint_number=1,
-            max_packet_size=self.bytes_per_microframe,
+            max_packet_size=self.bytes_per_microframe + 1,
         )
 
         # EP 0x82 IN - feedback to host
@@ -280,7 +282,7 @@ class USBAudioClass2Device(wiring.Component):
         # EP 0x83 IN - audio to host
         ep3_in = USBIsochronousStreamInEndpoint(
             endpoint_number=3,
-            max_packet_size=self.bytes_per_microframe,
+            max_packet_size=self.bytes_per_microframe + 1,
         )
         usb.add_endpoint(ep1_out)
         usb.add_endpoint(ep2_in)
@@ -369,13 +371,42 @@ class USBAudioClass2Device(wiring.Component):
 
         # - ep2_in - feedback to host -----------------------------------------
 
-        # TODO
+        # USB2.0 Section 5.12.4.2, Feedback
+        #
+        # "For high-speed endpoints, the Ff value shall be encoded in
+        #  an unsigned 12.13 (K=13) format which fits into four
+        #  bytes. The value shall be aligned into these four bytes so
+        #  that the binary point is located between the second and the
+        #  third byte so that it has a 16.16 format. The most
+        #  significant four bits shall be reported zero. Only the first
+        #  13 bits behind the binary point are required. The lower
+        #  three bits may be optionally used to extend the precision of
+        #  Ff, otherwise, they shall be reported as zero."
+        #
+        # Effectively that works out to: Q12.16
+
+        # 44.1k = 5.5125 samples / microframe
+        # 5.5125 * 2^14 = ??
+        # Presonus is: 40, 83, 05, 00  aka 0x00 05 8340
+        # hex(int(5.5125 * (2 ** 16))) = 0x05_8333
+
+        # 48k = 6 samples / microframe
+        # hex(int(6 * (2 ** 16))) = 0x06_0000
+        # Presonus is: 10, 00, 06, 00  aka 0x00 06 0010
+        # Mine     is: 00, 00, 06, 00  aka 0x00 06 0000
+
+        microframes_per_second = 8000 # 1 000 000 / 125
+        samples_per_microframe = self.sample_rate / microframes_per_second
+        feedback = round(samples_per_microframe * (2**16))
+        logging.info(f"samples_per_microframe: {samples_per_microframe}")
+        logging.info(f"feedback_value: {hex(feedback)}")
 
         feedbackValue = Signal(32)
         bitPos        = Signal(5)
 
+        m.d.comb += feedbackValue.eq(int(samples_per_microframe * (2 << 16)))
+
         m.d.comb += [
-            feedbackValue.eq(self.bit_depth << 14),
             bitPos.eq(ep2_in.address << 3),
             ep2_in.value.eq(0xff & (feedbackValue >> bitPos)),
         ]
