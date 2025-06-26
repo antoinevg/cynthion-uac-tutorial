@@ -12,11 +12,10 @@ from amaranth.lib.memory  import Memory
 from luna                 import top_level_cli
 
 from .ep1_uac2            import USBAudioClass2Device
+
+from .dac                 import DAC
 from .nco                 import NCO, sinusoid_lut
 from .vu                  import VU
-
-
-from .dac                 import DAC      # TODO
 
 
 class Top(Elaboratable):
@@ -44,12 +43,13 @@ class Top(Elaboratable):
         m.submodules.uac2 = uac2 = USBAudioClass2Device(
             sample_rate = self.sample_rate,
             bit_depth   = self.bit_depth,
-            channels    = self.channels
+            channels    = self.channels,
+            bus         = platform.request("target_phy"),
         )
 
         # Instantiate our sin LUT.
-        #gain  = 1.0
-        #gain = 0.794328 # -2dB
+        gain  = 1.0
+        gain = 0.794328 # -2dB
         gain = 0.501187 # -6dB
         m.submodules.lut = lut = Memory(
             shape  = signed(self.bit_depth),
@@ -95,7 +95,6 @@ class Top(Elaboratable):
             pmod1.o[1].eq(dac.outputs[1]),
         ]
         # ---------------------------------------------------------------------
-
 
         # Instantiate our VU meter.
         m.submodules.vu = vu = DomainRenamer({"sync": "usb"})(
