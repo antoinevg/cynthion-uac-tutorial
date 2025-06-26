@@ -13,7 +13,9 @@ description = "USB Audio Class 2.0 Tutorial for the Great Scott Gadgets Cynthion
 urls = { Source = "https://github.com/greatscottgadgets/cynthion-uac-tutorial" }
 readme = "README.md"
 dependencies = [
-    # TODO
+    "cynthion~=0.2.2",
+    "luna-usb~=0.2.1",
+    "wave~=0.0.2",
 ]
 
 [tool.setuptools]
