@@ -78,6 +78,8 @@ class DAC(wiring.Component):
         print(f"sample_cycles: {self.sample_cycles}")
 
         m.submodules.clock  = clock   = self.clock
+        m.submodules.fifo_0 = fifo_0  = self.fifo_0
+        m.submodules.fifo_1 = fifo_1  = self.fifo_1
 
         m.submodules.channel_0 = channel_0 = Channel(bit_depth=self.bit_depth, signed=self.signed)
         m.submodules.channel_1 = channel_1 = Channel(bit_depth=self.bit_depth, signed=self.signed)
@@ -113,13 +115,13 @@ class DAC(wiring.Component):
                 m.next = "WAIT"
 
         # connect input streams to fifo & fifo to channels
-        wiring.connect(m, wiring.flipped(self.inputs[0]), self.fifo_0.w_stream)
-        wiring.connect(m, wiring.flipped(self.inputs[1]), self.fifo_1.w_stream)
+        wiring.connect(m, wiring.flipped(self.inputs[0]), fifo_0.w_stream)
+        wiring.connect(m, wiring.flipped(self.inputs[1]), fifo_1.w_stream)
         m.d.comb += [
-            self.fifo_0.r_en.eq(self.latch & self.fifo_0.r_rdy),
-            sample_0.eq(self.fifo_0.r_data),
-            self.fifo_1.r_en.eq(self.latch & self.fifo_1.r_rdy),
-            sample_1.eq(self.fifo_1.r_data),
+            fifo_0.r_en.eq(self.latch & fifo_0.r_rdy),
+            sample_0.eq(fifo_0.r_data),
+            fifo_1.r_en.eq(self.latch & fifo_1.r_rdy),
+            sample_1.eq(fifo_1.r_data),
         ]
 
         # connect channel outputs to dac output

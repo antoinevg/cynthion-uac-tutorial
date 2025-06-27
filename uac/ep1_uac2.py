@@ -25,7 +25,7 @@ from luna.usb2                            import (
 )
 from luna.gateware.usb.usb2.request       import StallOnlyRequestHandler
 
-from .ep1_stream  import UAC2StreamToSamples, UAC2SamplesToStream
+from .ep1_stream  import UAC2StreamToSamples, SamplesToUAC2Stream
 from .ep1_request import UAC2RequestHandler
 
 
@@ -76,7 +76,7 @@ class USBAudioClass2Device(wiring.Component):
         # Add our standard control endpoint to the device.
         descriptors = self.create_descriptors()
         ep_control = usb.add_control_endpoint()
-        ep_control.add_standard_request_handlers(descriptors, blacklist=[
+        ep_control.add_standard_request_handlers(descriptors, skiplist=[
             # We have multiple interfaces so we will need to handle
             # SET_INTERFACE ourselves.
             lambda setup: (setup.type == USBRequestType.STANDARD) &
@@ -93,131 +93,36 @@ class USBAudioClass2Device(wiring.Component):
             (setup.type == USBRequestType.RESERVED)
         ep_control.add_request_handler(StallOnlyRequestHandler(stall_condition))
 
-        # Add endpoints.
-        # EP 0x01 OUT - audio from host
+
+        # - EP 0x01 OUT - audio from the host to the device --
+
         ep1_out = USBIsochronousStreamOutEndpoint(
             endpoint_number=1,
             max_packet_size=self.bytes_per_microframe + 1,
         )
         usb.add_endpoint(ep1_out)
 
-        # EP 0x82 IN - feedback to host
+        # Serialise UAC 2.0 stream to samples
+        m.submodules.uac2_out = uac2_out = UAC2StreamToSamples(
+            self.bit_depth,
+            self.channels,
+            self.subslot_size,
+        )
+        wiring.connect(m, uac2_out.input, ep1_out.stream)
+        for n in range(self.channels):
+            wiring.connect(m, uac2_out.outputs[n], wiring.flipped(self.outputs[n]))
+
+
+        # - EP 0x82 IN - feedback to the host from the device --
+
         ep2_in = USBIsochronousInEndpoint(
             endpoint_number=2,
             max_packet_size=4,
         )
         usb.add_endpoint(ep2_in)
 
-        # EP 0x83 IN - audio to host
-        ep3_in = USBIsochronousStreamInEndpoint(
-            endpoint_number=3,
-            max_packet_size=self.bytes_per_microframe + 1,
-        )
-        usb.add_endpoint(ep3_in)
-
-        # Configure endpoints.
-        m.d.comb += [
-            ep2_in.bytes_in_frame.eq(4),  # feedback is 32 bits = 4 bytes
-            ep3_in.bytes_in_frame.eq(self.bytes_per_microframe), # fs / 8000 * subslot_size * channels
-        ]
-
-
-        # - ep1_out - audio from host -----------------------------------------
-
-        first      = ep1_out.stream.payload.first
-        channel    = Signal(range(0, self.channels))
-        subslot    = Signal(32)
-        sample     = Signal(self.bit_depth)
-        got_sample = Signal()
-        error      = Signal()
-
-        # always receive audio from host
-        m.d.comb += ep1_out.stream.ready .eq(1) # driven by me, the ep1_out consumer
-
-        out_ready = self.outputs[0].ready | self.outputs[1].ready
-
-        # state machine for receiving host audio
-        with m.If(ep1_out.stream.valid & out_ready):
-            with m.FSM(domain="usb") as fsm:
-                with m.State("B0"):
-                    with m.If(first):
-                        m.d.usb += channel.eq(0)
-                    with m.Else():
-                        m.d.usb += channel.eq(channel + 1)
-
-                    m.d.usb += subslot[0:8].eq(ep1_out.stream.payload.data)      # byte0  TODO use word_select
-                    m.next = "B1"
-
-                with m.State("B1"): # ...
-                    with m.If(first):
-                        m.next = "ERROR"
-
-                    with m.Else():
-                        m.d.usb += subslot[8:16].eq(ep1_out.stream.payload.data) # byte1
-                        m.next = "B2"
-
-                with m.State("B2"): # ...
-                    with m.If(first):
-                        m.next = "ERROR"
-
-                    with m.Else():
-                        m.d.usb += subslot[16:24].eq(ep1_out.stream.payload.data) # byte2
-                        m.next = "B3"
-
-                with m.State("B3"):
-                    with m.If(first):
-                        m.next = "ERROR"
-
-                    with m.Else():
-                        m.d.usb += sample.eq(Cat(subslot[8:24], ep1_out.stream.payload.data)) # byte3
-                        m.d.comb += got_sample.eq(1)
-                        m.next = "B0"
-
-                with m.State("ERROR"):
-                    m.d.comb += error.eq(1)
-                    m.d.usb += channel.eq(0)
-                    m.d.usb += subslot[0:8].eq(ep1_out.stream.payload.data)       # byte0
-                    m.next = "B1"
-
-        with m.Else():
-            m.d.usb += channel.eq(0)
-            m.d.usb += subslot.eq(0)
-
-        # dump samples to output streams
-        output_streams = self.outputs
-        m.d.comb += [
-            output_streams[0].valid   .eq(got_sample & (channel == 0)), # driven by producer (that would be me)
-            output_streams[0].payload .eq(sample),
-            output_streams[1].valid   .eq(got_sample & (channel == 1)), # driven by producer (that would be me)
-            output_streams[1].payload .eq(sample),
-        ]
-
-
-        # - ep2_in - feedback to host -----------------------------------------
-
-        # USB2.0 Section 5.12.4.2, Feedback
-        #
-        # "For high-speed endpoints, the Ff value shall be encoded in
-        #  an unsigned 12.13 (K=13) format which fits into four
-        #  bytes. The value shall be aligned into these four bytes so
-        #  that the binary point is located between the second and the
-        #  third byte so that it has a 16.16 format. The most
-        #  significant four bits shall be reported zero. Only the first
-        #  13 bits behind the binary point are required. The lower
-        #  three bits may be optionally used to extend the precision of
-        #  Ff, otherwise, they shall be reported as zero."
-        #
-        # Effectively that works out to: Q12.16
-
-        # 44.1k = 5.5125 samples / microframe
-        # 5.5125 * 2^14 = ??
-        # Presonus is: 40, 83, 05, 00  aka 0x00 05 8340
-        # hex(int(5.5125 * (2 ** 16))) = 0x05_8333
-
-        # 48k = 6 samples / microframe
-        # hex(int(6 * (2 ** 16))) = 0x06_0000
-        # Presonus is: 10, 00, 06, 00  aka 0x00 06 0010
-        # Mine     is: 00, 00, 06, 00  aka 0x00 06 0000
+        # Feedback value is 32 bits wide = 4 bytes
+        m.d.comb += ep2_in.bytes_in_frame.eq(4),
 
         microframes_per_second = 8000 # 1 000 000 / 125
         samples_per_microframe = self.sample_rate / microframes_per_second
@@ -236,43 +141,27 @@ class USBAudioClass2Device(wiring.Component):
         ]
 
 
-        # - ep3_in - audio to host --------------------------------------------
+        # - EP 0x83 IN - audio to the host from the device --
 
-        # input streams
-        input_streams = self.inputs
+        ep3_in = USBIsochronousStreamInEndpoint(
+            endpoint_number=3,
+            max_packet_size=self.bytes_per_microframe + 1,
+        )
+        usb.add_endpoint(ep3_in)
 
-        # frame counters
-        next_channel = Signal(1)
-        next_byte = Signal(2)
+        # fs / 8000 * subslot_size * channels
+        m.d.comb += ep3_in.bytes_in_frame.eq(self.bytes_per_microframe),
 
-        # Subslot Frame Format for 24-bit int with subslot_size=4 is:
-        #    00:08  - lsb
-        #    08:15  -
-        #    16:23  - msb
-        #    24:31  - padding
-        subslot = Signal(32)
+        # Serialise samples to UAC 2.0 stream
+        m.submodules.uac2_in = uac2_in = SamplesToUAC2Stream(
+            self.bit_depth,
+            self.channels,
+            self.subslot_size,
+        )
+        for n in range(self.channels):
+            wiring.connect(m, uac2_in.inputs[n], wiring.flipped(self.inputs[n]))
+        wiring.connect(m, uac2_in.output, wiring.flipped(ep3_in.stream))
 
-        with m.If(next_channel == 0):
-            with m.If(next_byte == 3):
-                m.d.comb += input_streams[0].ready.eq(1)
-            m.d.comb += [
-                subslot[8:].eq(input_streams[0].payload)
-            ]
-        with m.Else():
-            with m.If(next_byte == 3):
-                m.d.comb += input_streams[1].ready.eq(1)
-            m.d.comb += [
-                subslot[8:].eq(input_streams[1].payload)
-            ]
-
-        m.d.comb += [
-            ep3_in.stream.valid.eq(1), # driven by producer (moi-même)
-            ep3_in.stream.payload.eq(subslot.word_select(next_byte, 8)),
-        ]
-        with m.If(ep3_in.stream.ready):
-            m.d.usb += next_byte.eq(next_byte + 1)
-            with m.If(next_byte == 3):
-                m.d.usb += next_channel.eq(~next_channel)
 
         return m
 

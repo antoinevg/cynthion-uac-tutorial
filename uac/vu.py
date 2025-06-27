@@ -44,17 +44,18 @@ class VU(wiring.Component):
         m = Module()
 
         m.submodules.clock = clock = self.clock
+        m.submodules.fifo  = fifo  = self.fifo
 
         # connect input to fifo
-        wiring.connect(m, wiring.flipped(self.input), self.fifo.w_stream)
+        wiring.connect(m, wiring.flipped(self.input), fifo.w_stream)
 
         # always accept data from producer
         m.d.comb += self.input.ready.eq(1)
 
         # calculate vu raw output signal
         with m.If(clock.stb_r):
-            m.d.comb += self.fifo.r_en.eq(self.fifo.r_rdy)
-            m.d.sync += self.output.eq(abs(self.fifo.r_data.as_signed()))
+            m.d.comb += fifo.r_en.eq(fifo.r_rdy)
+            m.d.sync += self.output.eq(abs(fifo.r_data.as_signed()))
 
             # led control
             with m.If(self.output >= self.logscale(5)):
