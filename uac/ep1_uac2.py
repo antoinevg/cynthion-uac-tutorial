@@ -46,7 +46,8 @@ class USBAudioClass2Device(wiring.Component):
             logging.error(f"Invalid bit_depth '{bit_depth}'. Supported values are 8, 16, 24, 32")
             sys.exit(1)
 
-        samples_per_microframe = self.sample_rate / 8000
+        microframes_per_second = 1000 / 0.125 # = 8000
+        samples_per_microframe = self.sample_rate / microframes_per_second
         bytes_per_microframe   = samples_per_microframe * self.subslot_size * self.channels
         logging.info(f"bytes_per_microframe: {bytes_per_microframe}")
 
@@ -124,20 +125,23 @@ class USBAudioClass2Device(wiring.Component):
         # Feedback value is 32 bits wide = 4 bytes
         m.d.comb += ep2_in.bytes_in_frame.eq(4),
 
-        microframes_per_second = 8000 # 1 000 000 / 125
+        # Calculate samples per microframe for our audio sample rate.
+        microframes_per_second = 1000 // 0.125 # 8000
         samples_per_microframe = self.sample_rate / microframes_per_second
-        feedback = round(samples_per_microframe * (2**16))
+
         logging.info(f"samples_per_microframe: {samples_per_microframe}")
-        logging.info(f"feedback_value: {hex(feedback)}")
+        logging.info(f"feedback_value: {hex(round(samples_per_microframe * (2**16)))}")
 
-        feedbackValue = Signal(32)
-        bitPos        = Signal(5)
+        feedbackValue = Signal(32)  # 4-byte feedback value to transmit
+        offset        = Signal(5)   # offset of the byte currently being transmitted
 
+        # Represent feedback value as a Q12.16 Fixed Point value.
         m.d.comb += feedbackValue.eq(int(samples_per_microframe * (2 << 16)))
 
+        # Transmit the feedback value.
         m.d.comb += [
-            bitPos.eq(ep2_in.address << 3),
-            ep2_in.value.eq(0xff & (feedbackValue >> bitPos)),
+            offset.eq(ep2_in.address << 3),
+            ep2_in.value.eq(0xff & (feedbackValue >> offset)),
         ]
 
 
@@ -303,7 +307,7 @@ class USBAudioClass2Device(wiring.Component):
                                    | (USBSynchronizationType.NONE << 2)  \
                                    | (USBUsageType.FEEDBACK << 4),
                 "wMaxPacketSize"   : 4,
-                "bInterval"        : 4,
+                "bInterval"        : 4, # 2^(n-1) = 8 * 125 us = 1 ms
             }))
 
 
